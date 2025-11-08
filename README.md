@@ -155,3 +155,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Support
 
 If you find this extension helpful, please consider giving it a star on GitHub!
+
+## Notion Setup
+
+1. Create a Notion [internal integration](https://www.notion.so/my-integrations) and copy the token that starts with `secret_`.
+2. Share the target database (or page) with the integration so it has access.
+3. Open Prompt Manager, go to **Settings → Notion Integration**, and paste the API key and database ID.
+4. Click **Test Connection**; the popup will now remember your entries if you need to switch tabs to copy values.
+5. Click **Connect Notion** once the test succeeds to enable syncing.
+
+> **Tip**: The extension now includes host permissions for `https://api.notion.com/*`, so no extra configuration is required when loading it unpacked in Chrome.
