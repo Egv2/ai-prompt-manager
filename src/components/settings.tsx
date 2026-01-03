@@ -22,12 +22,25 @@ import {
   Moon,
   Sun,
   Download,
+  Upload,
+  FileInput,
+  FileCheck,
 } from "lucide-react";
 import type { StorageType, SyncStatus, Prompt } from "../types";
-import { saveNotionConfig, clearNotionConfig, downloadPromptsAsJson } from "../lib/storage";
+import { saveNotionConfig, clearNotionConfig, downloadPromptsAsJson, importPromptsFromJson } from "../lib/storage";
 import { testNotionConnection } from "../lib/notion";
 import { useTheme } from "./theme-provider";
 import { useToast } from "../hooks/use-toast";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 interface SettingsProps {
   storageType: StorageType;
@@ -37,6 +50,7 @@ interface SettingsProps {
   autoSync: boolean;
   onAutoSyncChange: (autoSync: boolean) => void;
   prompts: Prompt[];
+  onImport: (prompts: Prompt[]) => void;
 }
 
 export default function Settings({
@@ -47,6 +61,7 @@ export default function Settings({
   autoSync,
   onAutoSyncChange,
   prompts,
+  onImport,
 }: SettingsProps) {
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
@@ -63,6 +78,11 @@ export default function Settings({
   const [isApiKeyFocused, setIsApiKeyFocused] = useState(false);
   const [isPageIdFocused, setIsPageIdFocused] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [importData, setImportData] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
 
   // Determine if dark mode is active
   useEffect(() => {
@@ -96,10 +116,38 @@ export default function Settings({
     }
   }, [notionApiKey, notionPageId]);
 
-  const handleStorageChange = (value: StorageType) => {
-    setSelectedStorage(value);
-    // Save immediately when changing storage type
-    onStorageChange(value);
+  const handleStorageChange = async (value: StorageType) => {
+    try {
+      setSelectedStorage(value);
+      // Save immediately when changing storage type
+      await onStorageChange(value);
+    } catch (error) {
+      console.error("Failed to change storage type:", error);
+
+      // If sync storage fails due to quota, suggest local storage
+      if (error instanceof Error &&
+          (error.message.includes('QUOTA_BYTES') || error.message.includes('QUOTA_BYTES_PER_ITEM'))) {
+        toast({
+          title: "Storage quota exceeded",
+          description: "Chrome sync storage is full. Switching to local storage.",
+          variant: "destructive",
+        });
+
+        // Force switch to local storage
+        setSelectedStorage("local");
+        try {
+          await onStorageChange("local");
+        } catch (localError) {
+          console.error("Failed to switch to local storage:", localError);
+        }
+      } else {
+        toast({
+          title: "Storage change failed",
+          description: "There was a problem changing your storage settings.",
+          variant: "destructive",
+        });
+      }
+    }
   };
 
   const handleTestConnection = async () => {
@@ -255,6 +303,64 @@ export default function Settings({
         description: "There was a problem exporting your prompts.",
         variant: "destructive",
       });
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        setImportData(content);
+        setImportError(null);
+      } catch (error) {
+        setImportError("Failed to read file");
+      }
+    };
+    reader.onerror = () => {
+      setImportError("Error reading file");
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImportPrompts = async () => {
+    setImportError(null);
+    setIsImporting(true);
+
+    try {
+      if (!importData.trim()) {
+        setImportError("Please provide JSON data to import");
+        setIsImporting(false);
+        return;
+      }
+
+      const importedPrompts = await importPromptsFromJson(importData);
+      onImport(importedPrompts);
+      setImportData("");
+      setFileName(null);
+      setIsImportDialogOpen(false);
+
+      toast({
+        title: "Import successful",
+        description: `${importedPrompts.length} prompt${importedPrompts.length === 1 ? "" : "s"} imported successfully.`,
+      });
+    } catch (error) {
+      console.error("Import failed:", error);
+      setImportError(
+        error instanceof Error ? error.message : "Invalid JSON format"
+      );
+      toast({
+        title: "Import failed",
+        description: "The provided data is not valid",
+        variant: "destructive",
+      });
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -636,19 +742,121 @@ export default function Settings({
                 />
               </div>
 
-              <Button
-                variant="outline"
-                onClick={handleExportPrompts}
-                className="justify-start w-full h-auto px-4 py-3 text-left gap-3"
-              >
-                <Download className="w-5 h-5 text-muted-foreground flex-shrink-0" />
-                <div className="flex-1">
-                  <div className="font-medium">Export Prompts</div>
-                  <div className="text-sm text-muted-foreground">
-                    Download all your prompts as a JSON file
+              <div className="space-y-3">
+                <Button
+                  variant="outline"
+                  onClick={handleExportPrompts}
+                  className="justify-start w-full h-auto px-4 py-3 text-left gap-3"
+                >
+                  <Download className="w-5 h-5 text-muted-foreground flex-shrink-0" />
+                  <div className="flex-1">
+                    <div className="font-medium">Export Prompts</div>
+                    <div className="text-sm text-muted-foreground">
+                      Download all your prompts as a JSON file
+                    </div>
                   </div>
-                </div>
-              </Button>
+                </Button>
+
+                <Dialog open={isImportDialogOpen} onOpenChange={setIsImportDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="justify-start w-full h-auto px-4 py-3 text-left gap-3"
+                    >
+                      <Upload className="w-5 h-5 text-muted-foreground flex-shrink-0" />
+                      <div className="flex-1">
+                        <div className="font-medium">Import Prompts</div>
+                        <div className="text-sm text-muted-foreground">
+                          Import prompts from a JSON file
+                        </div>
+                      </div>
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Import Prompts</DialogTitle>
+                      <DialogDescription>
+                        Import prompts from a JSON file or paste JSON data directly.
+                        Imported prompts will be merged with your existing collection.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <label
+                            htmlFor="import-file-upload"
+                            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium transition-colors border rounded-md cursor-pointer bg-secondary text-secondary-foreground hover:bg-secondary/80 border-border"
+                          >
+                            <FileInput className="w-4 h-4" />
+                            Choose File
+                          </label>
+                          <input
+                            id="import-file-upload"
+                            type="file"
+                            accept=".json,application/json"
+                            onChange={handleFileUpload}
+                            className="hidden"
+                          />
+                          {fileName && (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <FileCheck className="w-4 h-4 text-green-500" />
+                              <span className="truncate max-w-[200px]">{fileName}</span>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          Or paste JSON directly:
+                        </p>
+                        <Textarea
+                          placeholder={`Paste JSON data here...\n\nExample format:\n[\n  {\n    "id": "unique-id",\n    "title": "My Prompt",\n    "content": "...",\n    "tags": ["tag1", "tag2"],\n    "createdAt": 1234567890,\n    "updatedAt": 1234567890\n  }\n]`}
+                          value={importData}
+                          onChange={(e) => {
+                            setImportData(e.target.value);
+                            setImportError(null);
+                          }}
+                          className="min-h-[300px] font-mono text-sm"
+                        />
+                        {importError && (
+                          <div className="p-3 text-sm rounded-md bg-destructive/10 text-destructive">
+                            {importError}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setIsImportDialogOpen(false);
+                          setImportData("");
+                          setFileName(null);
+                          setImportError(null);
+                        }}
+                        disabled={isImporting}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={handleImportPrompts}
+                        disabled={!importData.trim() || isImporting}
+                        className="gap-2"
+                      >
+                        {isImporting ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Importing...
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-4 h-4" />
+                            Import
+                          </>
+                        )}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
 
               <Button
                 variant="outline"

@@ -28,7 +28,7 @@ const STORAGE_KEYS = {
 // Get prompts from storage
 export async function getPrompts(): Promise<{ prompts: Prompt[]; storageType: StorageType }> {
   return new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_KEYS.PROMPTS, STORAGE_KEYS.STORAGE_TYPE], (result) => {
+    chrome.storage.sync.get([STORAGE_KEYS.PROMPTS, STORAGE_KEYS.STORAGE_TYPE], (result: { [key: string]: any }) => {
       const storageType = (result[STORAGE_KEYS.STORAGE_TYPE] as StorageType) || "local"
       const prompts = (result[STORAGE_KEYS.PROMPTS] as Prompt[]) || []
 
@@ -47,28 +47,47 @@ export async function savePrompts(prompts: Prompt[], storageType: StorageType): 
     }
   })
 
+  // Debug: Check storage size before saving
+  const dataToSave = {
+    [STORAGE_KEYS.PROMPTS]: prompts,
+    [STORAGE_KEYS.STORAGE_TYPE]: storageType,
+    [STORAGE_KEYS.TAGS]: Array.from(allTags),
+  }
+  const dataString = JSON.stringify(dataToSave)
+  const dataSize = new Blob([dataString]).size
+  const dataSizeMB = dataSize / (1024 * 1024)
+
+  console.log(`[PromptManager] Saving ${prompts.length} prompts (${dataSizeMB.toFixed(2)} MB)`)
+
+  // Chrome sync storage has 5MB limit
+  if (dataSizeMB > 4.5) {
+    console.warn(`[PromptManager] Storage size (${dataSizeMB.toFixed(2)} MB) approaching Chrome sync limit (5MB)`)
+  }
+
   return new Promise((resolve, reject) => {
-    chrome.storage.sync.set(
-      {
-        [STORAGE_KEYS.PROMPTS]: prompts,
-        [STORAGE_KEYS.STORAGE_TYPE]: storageType,
-        [STORAGE_KEYS.TAGS]: Array.from(allTags),
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError)
-        } else {
-          resolve()
+    chrome.storage.sync.set(dataToSave, () => {
+      if (chrome.runtime.lastError) {
+        console.error(`[PromptManager] Save failed:`, chrome.runtime.lastError)
+
+        // If sync storage fails due to quota, try to suggest switching to local storage
+        if (chrome.runtime.lastError.message?.includes('QUOTA_BYTES') ||
+            chrome.runtime.lastError.message?.includes('QUOTA_BYTES_PER_ITEM')) {
+          console.warn(`[PromptManager] Sync storage quota exceeded. Consider switching to local storage.`)
         }
-      },
-    )
+
+        reject(chrome.runtime.lastError)
+      } else {
+        console.log(`[PromptManager] Save successful`)
+        resolve()
+      }
+    })
   })
 }
 
 // Get all tags
 export async function getAllTags(): Promise<string[]> {
   return new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_KEYS.TAGS], (result) => {
+    chrome.storage.sync.get([STORAGE_KEYS.TAGS], (result: { [key: string]: any }) => {
       const savedTags = result[STORAGE_KEYS.TAGS] as string[];
 
       // If there are no saved tags, return the default tags
@@ -84,7 +103,7 @@ export async function getAllTags(): Promise<string[]> {
 // Initialize default tags if none exist
 export async function initializeDefaultTags(): Promise<void> {
   return new Promise((resolve, reject) => {
-    chrome.storage.sync.get([STORAGE_KEYS.TAGS], (result) => {
+    chrome.storage.sync.get([STORAGE_KEYS.TAGS], (result: { [key: string]: any }) => {
       const existingTags = result[STORAGE_KEYS.TAGS] as string[];
 
       // Only initialize if no tags exist yet
@@ -112,7 +131,7 @@ export async function initializeDefaultTags(): Promise<void> {
 // Get Notion configuration
 export async function getNotionConfig(): Promise<NotionConfig | null> {
   return new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_KEYS.NOTION_CONFIG], (result) => {
+    chrome.storage.sync.get([STORAGE_KEYS.NOTION_CONFIG], (result: { [key: string]: any }) => {
       resolve((result[STORAGE_KEYS.NOTION_CONFIG] as NotionConfig) || null)
     })
   })
@@ -152,7 +171,7 @@ export async function clearNotionConfig(): Promise<void> {
 // Get sync status
 export async function getSyncStatus(): Promise<SyncStatus> {
   return new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_KEYS.SYNC_STATUS], (result) => {
+    chrome.storage.sync.get([STORAGE_KEYS.SYNC_STATUS], (result: { [key: string]: any }) => {
       resolve(
         (result[STORAGE_KEYS.SYNC_STATUS] as SyncStatus) || {
           lastSynced: null,
@@ -286,9 +305,11 @@ export async function importPromptsFromJson(json: string): Promise<Prompt[]> {
     }
 
     // Validate each prompt
-    importedPrompts.forEach((prompt) => {
-      if (!prompt.id || !prompt.content) {
-        throw new Error("Invalid prompt format: Missing required fields")
+    importedPrompts.forEach((prompt, index) => {
+      if (!prompt.id || !prompt.title || !prompt.content) {
+        throw new Error(
+          `Invalid prompt format at index ${index}: Missing required fields (id, title, or content)`
+        )
       }
     })
 

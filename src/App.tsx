@@ -121,8 +121,12 @@ function App() {
   }, [activeTab]);
 
   const handleAddPrompt = async (newPrompt: Prompt) => {
+    console.log("[PromptManager] Adding new prompt:", newPrompt.title);
+
     try {
       const updatedPrompts = [...prompts, newPrompt];
+      console.log(`[PromptManager] Total prompts after add: ${updatedPrompts.length}`);
+
       setPrompts(updatedPrompts);
       await savePrompts(updatedPrompts, storageType);
 
@@ -139,6 +143,9 @@ function App() {
         description: "Your prompt has been saved successfully.",
       });
 
+      // Clean up temp prompt from context menu if it exists
+      chrome.storage?.local.remove(["tempPrompt"]);
+
       if (storageType === "notion" && autoSync) await handleSync();
 
       // Switch back to prompts tab after adding
@@ -148,10 +155,23 @@ function App() {
         (document.querySelector('[value="prompts"]') as HTMLElement)?.click();
       }
     } catch (error) {
-      console.error("Failed to save prompt:", error);
+      console.error("[PromptManager] Failed to save prompt:", error);
+
+      // More specific error messages
+      let errorMessage = "There was a problem saving your prompt.";
+      if (error instanceof Error) {
+        if (error.message.includes("QUOTA_BYTES_PER_ITEM")) {
+          errorMessage = "Storage quota exceeded. Try removing some prompts or switch to local storage.";
+        } else if (error.message.includes("QUOTA_BYTES")) {
+          errorMessage = "Chrome sync storage limit reached (5MB). Try switching to local storage.";
+        } else {
+          errorMessage = `Save failed: ${error.message}`;
+        }
+      }
+
       toast({
         title: "Error saving prompt",
-        description: "There was a problem saving your prompt.",
+        description: errorMessage,
         variant: "destructive",
       });
       setPrompts(prompts); // Revert on error
@@ -400,6 +420,7 @@ function App() {
                 autoSync={autoSync}
                 onAutoSyncChange={handleAutoSyncChange}
                 prompts={prompts}
+                onImport={handleImportPrompts}
               />
             </div>
           </div>
@@ -598,6 +619,7 @@ function App() {
                   autoSync={autoSync}
                   onAutoSyncChange={handleAutoSyncChange}
                   prompts={prompts}
+                  onImport={handleImportPrompts}
                 />
               </div>
             </ScrollArea>
