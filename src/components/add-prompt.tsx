@@ -61,8 +61,8 @@ export default function AddPrompt({
   const [isTitleFocused, setIsTitleFocused] = useState(false);
   const [isContentFocused, setIsContentFocused] = useState(false);
 
-  // Character limit for content
-  const MAX_CONTENT_LENGTH = 5000;
+  // Character limit for content (increased from 5000 to 10000)
+  const MAX_CONTENT_LENGTH = 10000;
   const contentPercentage = Math.min(
     (content.length / MAX_CONTENT_LENGTH) * 100,
     100
@@ -88,6 +88,8 @@ export default function AddPrompt({
     e.preventDefault();
     setError(null);
 
+    console.log(`[PromptManager] Attempting to save prompt: ${title.trim()} (${content.length} characters)`);
+
     if (!content.trim()) {
       setError("Prompt content is required");
       return;
@@ -98,6 +100,15 @@ export default function AddPrompt({
         `Content exceeds maximum length of ${MAX_CONTENT_LENGTH} characters`
       );
       return;
+    }
+
+    // Check for problematic characters that might cause JSON issues
+    const hasEmoji = /[\uD83C-\uDBFF\uDC00-\uDFFF]/.test(content)
+    const hasNullChars = /\0/.test(content)
+    const hasControlChars = /[\x00-\x1F\x7F-\x9F]/.test(content)
+
+    if (hasEmoji || hasNullChars || hasControlChars) {
+      console.warn(`[PromptManager] Prompt contains special characters: emoji=${hasEmoji}, null=${hasNullChars}, control=${hasControlChars}`)
     }
 
     setIsSubmitting(true);

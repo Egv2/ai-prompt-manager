@@ -7,6 +7,9 @@ export interface Prompt {
   tags?: string[]
   createdAt: number
   updatedAt: number
+  // Internal properties for chunked prompts (optional)
+  chunkCount?: number
+  originalSize?: number
 }
 
 export interface NotionConfig {

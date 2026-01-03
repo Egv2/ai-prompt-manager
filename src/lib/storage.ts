@@ -23,17 +23,94 @@ const STORAGE_KEYS = {
   NOTION_CONFIG: "notionConfig",
   SYNC_STATUS: "syncStatus",
   TAGS: "tags",
+  PROMPT_CHUNKS: "promptChunks",
+}
+
+// Constants for chunking
+const MAX_PROMPT_SIZE_KB = 7 // Leave buffer below 8KB Chrome limit
+const CHUNK_SIZE_CHARS = 3000 // Characters per chunk to stay under size limit
+
+// Utility function to chunk a large prompt
+function chunkPrompt(prompt: Prompt): { metadata: any; chunks: string[] } {
+  const promptJson = JSON.stringify(prompt)
+  const promptSizeKB = new Blob([promptJson]).size / 1024
+
+  if (promptSizeKB <= MAX_PROMPT_SIZE_KB) {
+    return { metadata: null, chunks: [] }
+  }
+
+  console.log(`[PromptManager] Chunking prompt "${prompt.title}" (${promptSizeKB.toFixed(2)} KB)`)
+
+  // Split content into chunks
+  const chunks: string[] = []
+  const content = prompt.content
+
+  for (let i = 0; i < content.length; i += CHUNK_SIZE_CHARS) {
+    chunks.push(content.slice(i, i + CHUNK_SIZE_CHARS))
+  }
+
+  // Create metadata without content
+  const metadata = {
+    ...prompt,
+    content: undefined, // Will be reconstructed from chunks
+    chunkCount: chunks.length,
+    originalSize: promptSizeKB,
+  }
+
+  return { metadata, chunks }
+}
+
+// Utility function to reconstruct a prompt from chunks
+function reconstructPrompt(metadata: any, chunks: string[]): Prompt {
+  return {
+    ...metadata,
+    content: chunks.join(''),
+    chunkCount: undefined,
+    originalSize: undefined,
+  }
 }
 
 // Get prompts from storage
 export async function getPrompts(): Promise<{ prompts: Prompt[]; storageType: StorageType }> {
   return new Promise((resolve) => {
-    chrome.storage.sync.get([STORAGE_KEYS.PROMPTS, STORAGE_KEYS.STORAGE_TYPE], (result: { [key: string]: any }) => {
+    const storage = chrome.storage.sync // Try sync first, fallback to local if needed
+
+    storage.get([STORAGE_KEYS.PROMPTS, STORAGE_KEYS.STORAGE_TYPE, STORAGE_KEYS.PROMPT_CHUNKS], (result: { [key: string]: any }) => {
+      // If no data in sync, try local storage
+      if (!result[STORAGE_KEYS.PROMPTS] && !result[STORAGE_KEYS.STORAGE_TYPE]) {
+        chrome.storage.local.get([STORAGE_KEYS.PROMPTS, STORAGE_KEYS.STORAGE_TYPE, STORAGE_KEYS.PROMPT_CHUNKS], (localResult: { [key: string]: any }) => {
+          processPrompts(localResult, resolve)
+        })
+      } else {
+        processPrompts(result, resolve)
+      }
+    })
+
+    function processPrompts(result: { [key: string]: any }, resolve: (value: { prompts: Prompt[]; storageType: StorageType }) => void) {
       const storageType = (result[STORAGE_KEYS.STORAGE_TYPE] as StorageType) || "local"
-      const prompts = (result[STORAGE_KEYS.PROMPTS] as Prompt[]) || []
+      const savedPrompts = (result[STORAGE_KEYS.PROMPTS] as any[]) || []
+      const chunks = (result[STORAGE_KEYS.PROMPT_CHUNKS] as { [key: string]: string[] }) || {}
+
+      // Reconstruct chunked prompts
+      const prompts: Prompt[] = savedPrompts.map(prompt => {
+        if (prompt.chunkCount && prompt.chunkCount > 0) {
+          // This is a chunked prompt metadata, reconstruct it
+          const promptChunks = chunks[prompt.id]
+          if (promptChunks && promptChunks.length === prompt.chunkCount) {
+            return reconstructPrompt(prompt, promptChunks)
+          } else {
+            console.error(`[PromptManager] Missing or incomplete chunks for prompt "${prompt.title}" (expected ${prompt.chunkCount}, got ${promptChunks?.length || 0})`)
+            // Return metadata as-is if chunks are missing
+            return { ...prompt, content: '[Error: Content chunks missing]' }
+          }
+        } else {
+          // Regular prompt
+          return prompt
+        }
+      })
 
       resolve({ prompts, storageType })
-    })
+    }
   })
 }
 
@@ -47,37 +124,92 @@ export async function savePrompts(prompts: Prompt[], storageType: StorageType): 
     }
   })
 
+  // Process prompts for chunking
+  const regularPrompts: Prompt[] = []
+  const chunkedPromptsMetadata: any[] = []
+  const allChunks: { [key: string]: string[] } = {}
+
+  prompts.forEach((prompt, index) => {
+    const promptSize = new Blob([JSON.stringify(prompt)]).size
+    const promptSizeKB = promptSize / 1024
+    console.log(`[PromptManager] Prompt ${index + 1}: "${prompt.title}" - ${prompt.content.length} chars, ${promptSizeKB.toFixed(2)} KB`)
+
+    // Check for problematic characters
+    const hasEmoji = /[\uD83C-\uDBFF\uDC00-\uDFFF]/.test(prompt.content)
+    const hasNullChars = /\0/.test(prompt.content)
+    const hasControlChars = /[\x00-\x1F\x7F-\x9F]/.test(prompt.content)
+
+    if (hasEmoji || hasNullChars || hasControlChars) {
+      console.warn(`[PromptManager] Prompt "${prompt.title}" contains special characters: emoji=${hasEmoji}, null=${hasNullChars}, control=${hasControlChars}`)
+    }
+
+    // Check if prompt needs chunking
+    if (promptSizeKB > MAX_PROMPT_SIZE_KB) {
+      console.log(`[PromptManager] Prompt "${prompt.title}" exceeds ${MAX_PROMPT_SIZE_KB}KB limit, chunking...`)
+      const { metadata, chunks } = chunkPrompt(prompt)
+      if (metadata && chunks.length > 0) {
+        chunkedPromptsMetadata.push(metadata)
+        allChunks[prompt.id] = chunks
+      }
+    } else {
+      regularPrompts.push(prompt)
+    }
+  })
+
+  // Combine regular prompts with chunked metadata
+  const allPromptsToSave = [...regularPrompts, ...chunkedPromptsMetadata]
+
   // Debug: Check storage size before saving
   const dataToSave = {
-    [STORAGE_KEYS.PROMPTS]: prompts,
+    [STORAGE_KEYS.PROMPTS]: allPromptsToSave,
     [STORAGE_KEYS.STORAGE_TYPE]: storageType,
     [STORAGE_KEYS.TAGS]: Array.from(allTags),
+    [STORAGE_KEYS.PROMPT_CHUNKS]: allChunks,
   }
+
   const dataString = JSON.stringify(dataToSave)
   const dataSize = new Blob([dataString]).size
   const dataSizeMB = dataSize / (1024 * 1024)
+  const dataSizeKB = dataSize / 1024
 
-  console.log(`[PromptManager] Saving ${prompts.length} prompts (${dataSizeMB.toFixed(2)} MB)`)
+  console.log(`[PromptManager] Saving ${allPromptsToSave.length} prompts (${Object.keys(allChunks).length} chunked) (${dataSizeMB.toFixed(2)} MB / ${dataSizeKB.toFixed(1)} KB)`)
 
   // Chrome sync storage has 5MB limit
   if (dataSizeMB > 4.5) {
-    console.warn(`[PromptManager] Storage size (${dataSizeMB.toFixed(2)} MB) approaching Chrome sync limit (5MB)`)
+    console.warn(`[PromptManager] Total storage size (${dataSizeMB.toFixed(2)} MB) approaching Chrome sync limit (5MB)`)
+  }
+
+  // Chrome sync storage has per-item limit of ~8KB for individual items
+  if (dataSizeKB > 8000) {
+    console.error(`[PromptManager] Data size (${dataSizeKB.toFixed(1)} KB) exceeds Chrome sync per-item limit (~8KB)!`)
   }
 
   return new Promise((resolve, reject) => {
-    chrome.storage.sync.set(dataToSave, () => {
+    const storage = storageType === 'local' ? chrome.storage.local : chrome.storage.sync
+
+    storage.set(dataToSave, () => {
       if (chrome.runtime.lastError) {
         console.error(`[PromptManager] Save failed:`, chrome.runtime.lastError)
 
-        // If sync storage fails due to quota, try to suggest switching to local storage
-        if (chrome.runtime.lastError.message?.includes('QUOTA_BYTES') ||
-            chrome.runtime.lastError.message?.includes('QUOTA_BYTES_PER_ITEM')) {
-          console.warn(`[PromptManager] Sync storage quota exceeded. Consider switching to local storage.`)
-        }
+        // If sync storage fails due to quota, try local storage as fallback
+        if (storageType !== 'local' && (chrome.runtime.lastError.message?.includes('QUOTA_BYTES') ||
+            chrome.runtime.lastError.message?.includes('QUOTA_BYTES_PER_ITEM'))) {
+          console.warn(`[PromptManager] Sync storage quota exceeded. Trying local storage as fallback.`)
 
-        reject(chrome.runtime.lastError)
+          chrome.storage.local.set(dataToSave, () => {
+            if (chrome.runtime.lastError) {
+              console.error(`[PromptManager] Local storage fallback also failed:`, chrome.runtime.lastError)
+              reject(new Error(`Storage quota exceeded. Please reduce prompt content size or clear some prompts.`))
+            } else {
+              console.log(`[PromptManager] Saved to local storage as fallback`)
+              resolve()
+            }
+          })
+        } else {
+          reject(chrome.runtime.lastError)
+        }
       } else {
-        console.log(`[PromptManager] Save successful`)
+        console.log(`[PromptManager] Save successful (${Object.keys(allChunks).length} prompts chunked)`)
         resolve()
       }
     })
