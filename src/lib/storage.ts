@@ -253,6 +253,28 @@ export function exportPromptsToJson(prompts: Prompt[]): string {
   return JSON.stringify(prompts, null, 2)
 }
 
+// Download prompts as JSON file
+export function downloadPromptsAsJson(prompts: Prompt[]): void {
+  try {
+    const jsonString = exportPromptsToJson(prompts)
+    const blob = new Blob([jsonString], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5)
+    const filename = `prompts-export-${timestamp}.json`
+    
+    const link = document.createElement("a")
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    console.error("Failed to download prompts:", error)
+    throw error
+  }
+}
+
 // Import prompts from JSON
 export async function importPromptsFromJson(json: string): Promise<Prompt[]> {
   try {

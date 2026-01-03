@@ -16,14 +16,18 @@ import {
   Loader2,
   Database,
   HardDrive,
-  Settings2,
   RefreshCw,
   Shield,
   Clock,
+  Moon,
+  Sun,
+  Download,
 } from "lucide-react";
-import type { StorageType, SyncStatus } from "../types";
-import { saveNotionConfig, clearNotionConfig } from "../lib/storage";
+import type { StorageType, SyncStatus, Prompt } from "../types";
+import { saveNotionConfig, clearNotionConfig, downloadPromptsAsJson } from "../lib/storage";
 import { testNotionConnection } from "../lib/notion";
+import { useTheme } from "./theme-provider";
+import { useToast } from "../hooks/use-toast";
 
 interface SettingsProps {
   storageType: StorageType;
@@ -32,6 +36,7 @@ interface SettingsProps {
   syncStatus: SyncStatus;
   autoSync: boolean;
   onAutoSyncChange: (autoSync: boolean) => void;
+  prompts: Prompt[];
 }
 
 export default function Settings({
@@ -41,7 +46,10 @@ export default function Settings({
   syncStatus,
   autoSync,
   onAutoSyncChange,
+  prompts,
 }: SettingsProps) {
+  const { theme, setTheme } = useTheme();
+  const { toast } = useToast();
   const [selectedStorage, setSelectedStorage] =
     useState<StorageType>(storageType);
   const [notionApiKey, setNotionApiKey] = useState("");
@@ -54,6 +62,32 @@ export default function Settings({
   >("idle");
   const [isApiKeyFocused, setIsApiKeyFocused] = useState(false);
   const [isPageIdFocused, setIsPageIdFocused] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+
+  // Determine if dark mode is active
+  useEffect(() => {
+    const checkDarkMode = () => {
+      if (theme === "dark") {
+        setIsDarkMode(true);
+      } else if (theme === "light") {
+        setIsDarkMode(false);
+      } else {
+        // system theme
+        if (typeof window !== "undefined" && window.matchMedia) {
+          setIsDarkMode(window.matchMedia("(prefers-color-scheme: dark)").matches);
+        }
+      }
+    };
+
+    checkDarkMode();
+
+    if (theme === "system" && typeof window !== "undefined" && window.matchMedia) {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handleChange = () => checkDarkMode();
+      mediaQuery.addEventListener("change", handleChange);
+      return () => mediaQuery.removeEventListener("change", handleChange);
+    }
+  }, [theme]);
 
   // Reset connection status when inputs change
   useEffect(() => {
@@ -187,6 +221,41 @@ export default function Settings({
         diffInMinutes / 60 < 2 ? "" : "s"
       } ago`;
     return syncTime.toLocaleString();
+  };
+
+  const handleThemeChange = (checked: boolean) => {
+    const newTheme = checked ? "dark" : "light";
+    setTheme(newTheme);
+    toast({
+      title: checked ? "Dark Mode enabled" : "Light Mode enabled",
+      description: `Theme changed to ${checked ? "dark" : "light"} mode.`,
+    });
+  };
+
+  const handleExportPrompts = () => {
+    try {
+      if (prompts.length === 0) {
+        toast({
+          title: "No prompts to export",
+          description: "You don't have any prompts to export yet.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      downloadPromptsAsJson(prompts);
+      toast({
+        title: "Export successful",
+        description: `${prompts.length} prompt${prompts.length === 1 ? "" : "s"} exported successfully.`,
+      });
+    } catch (error) {
+      console.error("Failed to export prompts:", error);
+      toast({
+        title: "Export failed",
+        description: "There was a problem exporting your prompts.",
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -493,6 +562,48 @@ export default function Settings({
             </div>
           </div>
 
+          {/* Appearance Settings Card */}
+          <div className="overflow-hidden transition-shadow border rounded-lg shadow-sm bg-card border-border/40 hover:shadow-md">
+            <div className="p-4 border-b border-border/40">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-full bg-primary/10 text-primary">
+                  <Sun className="w-5 h-5 dark:hidden" />
+                  <Moon className="hidden w-5 h-5 dark:block" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold">Appearance</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Customize the look and feel of the application
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="p-4 space-y-4">
+              <div className="flex items-center justify-between p-4 border rounded-lg border-border/40">
+                <div className="flex items-center gap-3">
+                  {isDarkMode ? (
+                    <Moon className="w-5 h-5 text-muted-foreground" />
+                  ) : (
+                    <Sun className="w-5 h-5 text-muted-foreground" />
+                  )}
+                  <div>
+                    <Label htmlFor="dark-mode" className="font-medium cursor-pointer">
+                      Dark Mode
+                    </Label>
+                    <div className="text-sm text-muted-foreground">
+                      Switch between light and dark theme
+                    </div>
+                  </div>
+                </div>
+                <Switch
+                  id="dark-mode"
+                  checked={isDarkMode}
+                  onCheckedChange={handleThemeChange}
+                />
+              </div>
+            </div>
+          </div>
+
           {/* Privacy Settings Card */}
           <div className="overflow-hidden transition-shadow border rounded-lg shadow-sm bg-card border-border/40 hover:shadow-md">
             <div className="p-4 border-b border-border/40">
@@ -524,6 +635,20 @@ export default function Settings({
                   onCheckedChange={() => {}}
                 />
               </div>
+
+              <Button
+                variant="outline"
+                onClick={handleExportPrompts}
+                className="justify-start w-full h-auto px-4 py-3 text-left gap-3"
+              >
+                <Download className="w-5 h-5 text-muted-foreground flex-shrink-0" />
+                <div className="flex-1">
+                  <div className="font-medium">Export Prompts</div>
+                  <div className="text-sm text-muted-foreground">
+                    Download all your prompts as a JSON file
+                  </div>
+                </div>
+              </Button>
 
               <Button
                 variant="outline"

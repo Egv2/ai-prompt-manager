@@ -391,7 +391,7 @@ export default function PromptListRedesigned({
       </div>
 
       {/* Prompts List */}
-      <ScrollArea className="flex-1 overflow-scroll bg-gray-100 bg">
+      <ScrollArea className="flex-1 overflow-scroll bg-muted/30 dark:bg-background">
         <div className="p-3">
           {filteredPrompts.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-center">
@@ -407,7 +407,7 @@ export default function PromptListRedesigned({
               {filteredPrompts.map((prompt) => (
                 <div
                   key={prompt.id}
-                  className="p-4 transition-all bg-white border shadow-sm dark:bg-card rounded-xl hover:shadow-md border-border/30"
+                  className="p-4 transition-all bg-card border shadow-sm rounded-xl hover:shadow-md border-border/30"
                 >
                   <div className="flex items-start justify-between">
                     <div
@@ -518,7 +518,7 @@ export default function PromptListRedesigned({
               {filteredPrompts.map((prompt) => (
                 <div
                   key={prompt.id}
-                  className="bg-white dark:bg-card rounded-xl shadow-sm hover:shadow-md border border-border/30 p-3 h-[140px] flex flex-col transition-all"
+                  className="bg-card rounded-xl shadow-sm hover:shadow-md border border-border/30 p-3 h-[140px] flex flex-col transition-all"
                 >
                   <div className="flex items-start justify-between">
                     <h3 className="text-xs font-semibold line-clamp-1">

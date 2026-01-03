@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+
+// Declare chrome if it's not available (e.g., in a testing environment)
+declare const chrome: any;
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModeToggle } from "./components/mode-toggle";
 import PromptList from "./components/prompt-list";
@@ -10,7 +13,7 @@ import Settings from "./components/settings";
 import SearchBar from "./components/search-bar";
 import Help from "./components/help";
 import ImportExport from "./components/import-export";
-import type { Prompt, StorageType } from "./types";
+import type { Prompt, StorageType, SyncStatus } from "./types";
 import {
   getPrompts,
   savePrompts,
@@ -46,7 +49,7 @@ function App() {
   const [storageType, setStorageType] = useState<StorageType>("local");
   const [isLoading, setIsLoading] = useState(true);
   const [notionConnected, setNotionConnected] = useState(false);
-  const [syncStatus, setSyncStatus] = useState({
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     lastSynced: null,
     inProgress: false,
     error: null,
@@ -55,11 +58,10 @@ function App() {
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [autoSync, setAutoSync] = useState(false);
-  const [useRedesignedUI, setUseRedesignedUI] = useState(true); // Set to true to use the redesigned UI
+  const [useRedesignedUI] = useState(true); // Set to true to use the redesigned UI
   const [activeTab, setActiveTab] = useState("prompts");
   const { toast } = useToast();
   const [addPromptInitialContent, setAddPromptInitialContent] = useState("");
-  const addPromptOpenedRef = useRef(false);
 
   // Load prompts and settings
   useEffect(() => {
@@ -107,7 +109,7 @@ function App() {
   }, [searchQuery, selectedTags, prompts]);
 
   useEffect(() => {
-    chrome.storage?.local.get(["tempPrompt"], (result) => {
+    chrome.storage?.local.get(["tempPrompt"], (result: { tempPrompt?: string }) => {
       if (result.tempPrompt) {
         setAddPromptInitialContent(result.tempPrompt);
         chrome.storage.local.remove("tempPrompt");
@@ -143,7 +145,7 @@ function App() {
       if (useRedesignedUI) {
         setActiveTab("prompts");
       } else {
-        document.querySelector('[value="prompts"]')?.click();
+        (document.querySelector('[value="prompts"]') as HTMLElement)?.click();
       }
     } catch (error) {
       console.error("Failed to save prompt:", error);
@@ -306,7 +308,7 @@ function App() {
     if (useRedesignedUI) {
       setActiveTab("add");
     } else {
-      document.querySelector('[value="add"]')?.click();
+      (document.querySelector('[value="add"]') as HTMLElement)?.click();
     }
   };
 
@@ -314,9 +316,9 @@ function App() {
     if (useRedesignedUI) {
       setActiveTab("settings");
     } else {
-      document.querySelector('[value="settings"]')?.click();
+      (document.querySelector('[value="settings"]') as HTMLElement)?.click();
     }
-  }
+  };
   if (isLoading) {
     return (
       <div className="flex flex-col h-full bg-background">
@@ -367,7 +369,7 @@ function App() {
                 <X className="w-5 h-5" />
               </Button>
             </header>
-            <div className="flex-1 p-1 overflow-y-auto bg-gray-100">
+            <div className="flex-1 p-1 overflow-y-auto bg-muted/30 dark:bg-background">
               <AddPrompt
                 onAdd={handleAddPrompt}
                 availableTags={availableTags}
@@ -389,7 +391,7 @@ function App() {
                 <X className="w-5 h-5" />
               </Button>
             </header>
-            <div className="flex-1 p-1 overflow-y-auto bg-gray-100">
+            <div className="flex-1 p-1 overflow-y-auto bg-muted/30 dark:bg-background">
               <Settings
                 storageType={storageType}
                 notionConnected={notionConnected}
@@ -397,6 +399,7 @@ function App() {
                 syncStatus={syncStatus}
                 autoSync={autoSync}
                 onAutoSyncChange={handleAutoSyncChange}
+                prompts={prompts}
               />
             </div>
           </div>
@@ -548,7 +551,7 @@ function App() {
                       variant="default"
                       className="gap-2 mt-6 transition-all duration-300 bg-primary hover:bg-primary/90"
                       onClick={() =>
-                        document.querySelector('[value="add"]')?.click()
+                        (document.querySelector('[value="add"]') as HTMLElement)?.click()
                       }
                     >
                       <Plus className="w-4 h-4" />
@@ -594,6 +597,7 @@ function App() {
                   syncStatus={syncStatus}
                   autoSync={autoSync}
                   onAutoSyncChange={handleAutoSyncChange}
+                  prompts={prompts}
                 />
               </div>
             </ScrollArea>

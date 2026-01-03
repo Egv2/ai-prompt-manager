@@ -38,15 +38,42 @@ export function ThemeProvider({ children, defaultTheme = "system", storageKey = 
       // Catch possible errors with localStorage (e.g., when quota is exceeded)
     }
 
-    if (theme === "system") {
-      document.documentElement.classList.remove("dark")
-      document.documentElement.style.colorScheme = ""
-    } else if (theme === "dark") {
-      document.documentElement.classList.add("dark")
-      document.documentElement.style.colorScheme = "dark"
-    } else {
-      document.documentElement.classList.remove("dark")
-      document.documentElement.style.colorScheme = "light"
+    const getSystemTheme = () => {
+      if (typeof window !== "undefined" && window.matchMedia) {
+        return window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light"
+      }
+      return "light"
+    }
+
+    const applyTheme = () => {
+      if (theme === "system") {
+        const systemTheme = getSystemTheme()
+        if (systemTheme === "dark") {
+          document.documentElement.classList.add("dark")
+          document.documentElement.style.colorScheme = "dark"
+        } else {
+          document.documentElement.classList.remove("dark")
+          document.documentElement.style.colorScheme = "light"
+        }
+      } else if (theme === "dark") {
+        document.documentElement.classList.add("dark")
+        document.documentElement.style.colorScheme = "dark"
+      } else {
+        document.documentElement.classList.remove("dark")
+        document.documentElement.style.colorScheme = "light"
+      }
+    }
+
+    applyTheme()
+
+    // Listen for system theme changes when theme is set to "system"
+    if (theme === "system" && typeof window !== "undefined" && window.matchMedia) {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)")
+      const handleChange = () => applyTheme()
+      mediaQuery.addEventListener("change", handleChange)
+      return () => mediaQuery.removeEventListener("change", handleChange)
     }
   }, [theme, storageKey])
 
