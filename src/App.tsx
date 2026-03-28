@@ -18,7 +18,12 @@ import {
   syncWithNotion,
   getSyncStatus,
   getAllTags,
+  getAutoSyncSetting,
+  setAutoSyncSetting,
+  addToNotionDeletionQueue,
+  removeFromNotionDeletionQueue,
 } from "./lib/storage";
+import { deletePromptFromNotion } from "./lib/notion";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -70,6 +75,7 @@ function App() {
           await getPrompts();
         const status = await getSyncStatus();
         const tags = await getAllTags();
+        const autoSyncEnabled = await getAutoSyncSetting();
 
         setPrompts(loadedPrompts);
         setFilteredPrompts(loadedPrompts);
@@ -77,6 +83,7 @@ function App() {
         setNotionConnected(loadedStorageType === "notion");
         setSyncStatus(status);
         setAvailableTags(tags);
+        setAutoSync(autoSyncEnabled);
       } catch (error) {
         console.error("Failed to load data:", error);
         toast({
@@ -157,17 +164,41 @@ function App() {
   };
 
   const handleDeletePrompt = async (id: string) => {
+    const updatedPrompts = prompts.filter((prompt) => prompt.id !== id);
+    setPrompts(updatedPrompts);
+
+    let notionDeletionPending = false;
+    let notionDeletionHandled = false;
+
+    if (storageType === "notion") {
+      try {
+        await addToNotionDeletionQueue(id);
+      } catch (error) {
+        console.error("Failed to queue Notion deletion:", error);
+      }
+
+      try {
+        const deleted = await deletePromptFromNotion(id);
+        if (!deleted) {
+          console.warn("Notion page was not found; removing from queue.");
+        }
+        notionDeletionHandled = true;
+      } catch (error) {
+        notionDeletionPending = true;
+        console.error("Failed to delete prompt from Notion:", error);
+      }
+
+      if (notionDeletionHandled) {
+        try {
+          await removeFromNotionDeletionQueue([id]);
+        } catch (error) {
+          console.error("Failed to update Notion deletion queue:", error);
+        }
+      }
+    }
+
     try {
-      const updatedPrompts = prompts.filter((prompt) => prompt.id !== id);
-      setPrompts(updatedPrompts);
       await savePrompts(updatedPrompts, storageType);
-
-      toast({
-        title: "Prompt deleted",
-        description: "Your prompt has been deleted successfully.",
-      });
-
-      if (storageType === "notion" && autoSync) await handleSync();
     } catch (error) {
       console.error("Failed to delete prompt:", error);
       toast({
@@ -176,7 +207,22 @@ function App() {
         variant: "destructive",
       });
       setPrompts(prompts); // Revert on error
+      return;
     }
+
+    if (notionDeletionPending) {
+      toast({
+        title: "Prompt deleted locally",
+        description: "We'll retry removing it from Notion during the next sync.",
+      });
+    } else {
+      toast({
+        title: "Prompt deleted",
+        description: "Your prompt has been deleted successfully.",
+      });
+    }
+
+    if (storageType === "notion" && autoSync) await handleSync();
   };
 
   const handleEditPrompt = async (updatedPrompt: Prompt) => {
@@ -217,6 +263,13 @@ function App() {
       await savePrompts(prompts, newStorageType);
       setStorageType(newStorageType);
       setNotionConnected(newStorageType === "notion");
+
+      if (newStorageType !== "notion") {
+        setAutoSync(false);
+        setAutoSyncSetting(false).catch((error) => {
+          console.error("Failed to disable auto sync:", error);
+        });
+      }
 
       toast({
         title: "Storage updated",
@@ -273,6 +326,19 @@ function App() {
 
   const handleAutoSyncChange = (value: boolean) => {
     setAutoSync(value);
+
+    setAutoSyncSetting(value).catch((error) => {
+      console.error("Failed to persist auto sync setting:", error);
+      toast({
+        title: "Auto sync setting",
+        description: "Could not save your auto sync preference.",
+        variant: "destructive",
+      });
+    });
+
+    if (value && storageType === "notion") {
+      void handleSync();
+    }
   };
 
   const handleImportPrompts = async (importedPrompts: Prompt[]) => {
@@ -397,6 +463,7 @@ function App() {
                 syncStatus={syncStatus}
                 autoSync={autoSync}
                 onAutoSyncChange={handleAutoSyncChange}
+                onSyncNow={handleSync}
               />
             </div>
           </div>
@@ -594,6 +661,7 @@ function App() {
                   syncStatus={syncStatus}
                   autoSync={autoSync}
                   onAutoSyncChange={handleAutoSyncChange}
+                  onSyncNow={handleSync}
                 />
               </div>
             </ScrollArea>
