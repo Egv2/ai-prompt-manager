@@ -1,5 +1,5 @@
 import type { Prompt, StorageType, NotionConfig, SyncStatus } from "../types"
-import { syncWithNotion as notionSync } from "./notion"
+import { syncWithNotion as notionSync, deletePromptFromNotion } from "./notion"
 
 // Declare chrome if it's not available (e.g., in a testing environment)
 declare const chrome: any
@@ -22,6 +22,9 @@ const STORAGE_KEYS = {
   STORAGE_TYPE: "storageType",
   NOTION_CONFIG: "notionConfig",
   SYNC_STATUS: "syncStatus",
+  AUTO_SYNC: "autoSyncEnabled",
+  PROMPTS_CHUNK_COUNT: "promptsChunkCount",
+  NOTION_DELETE_QUEUE: "notionDeleteQueue",
   TAGS: "tags",
   PROMPT_CHUNKS: "promptChunks",
 }
@@ -70,8 +73,11 @@ function reconstructPrompt(metadata: any, chunks: string[]): Prompt {
   }
 }
 
-// Get prompts from storage
-export async function getPrompts(): Promise<{ prompts: Prompt[]; storageType: StorageType }> {
+const PROMPTS_CHUNK_PREFIX = "promptsChunk_"
+const PROMPT_CHUNK_SIZE = 6000
+const NOTION_ID_REGEX = /^[0-9a-f]{32}$/i
+
+function chromeSyncGet(keys?: string[] | string): Promise<Record<string, any>> {
   return new Promise((resolve) => {
     const storage = chrome.storage.sync // Try sync first, fallback to local if needed
 
@@ -112,6 +118,45 @@ export async function getPrompts(): Promise<{ prompts: Prompt[]; storageType: St
       resolve({ prompts, storageType })
     }
   })
+}
+
+function normalizeNotionIdForQueue(id: string): string {
+  return id.replace(/-/g, "").trim()
+}
+
+// Get prompts from storage
+export async function getPrompts(): Promise<{ prompts: Prompt[]; storageType: StorageType }> {
+  const base = await chromeSyncGet([
+    STORAGE_KEYS.PROMPTS,
+    STORAGE_KEYS.STORAGE_TYPE,
+    STORAGE_KEYS.PROMPTS_CHUNK_COUNT,
+  ])
+
+  const storageType = (base[STORAGE_KEYS.STORAGE_TYPE] as StorageType) || "local"
+  const legacyPrompts = base[STORAGE_KEYS.PROMPTS] as Prompt[] | undefined
+
+  if (Array.isArray(legacyPrompts) && legacyPrompts.length > 0) {
+    return { prompts: legacyPrompts, storageType }
+  }
+
+  const chunkCount = Number(base[STORAGE_KEYS.PROMPTS_CHUNK_COUNT] ?? 0)
+
+  if (chunkCount > 0) {
+    const chunkKeys = Array.from({ length: chunkCount }, (_, index) => `${PROMPTS_CHUNK_PREFIX}${index}`)
+    const chunkData = await chromeSyncGet(chunkKeys)
+    const combined = chunkKeys.map((key) => (chunkData[key] as string) ?? "").join("")
+
+    if (combined) {
+      try {
+        const parsed = JSON.parse(combined) as Prompt[]
+        return { prompts: Array.isArray(parsed) ? parsed : [], storageType }
+      } catch (error) {
+        console.error("Failed to parse prompt chunks:", error)
+      }
+    }
+  }
+
+  return { prompts: [], storageType }
 }
 
 // Save prompts to storage
@@ -269,6 +314,61 @@ export async function getNotionConfig(): Promise<NotionConfig | null> {
   })
 }
 
+async function setNotionDeletionQueue(queue: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.sync.set(
+      {
+        [STORAGE_KEYS.NOTION_DELETE_QUEUE]: queue,
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError)
+        } else {
+          resolve()
+        }
+      },
+    )
+  })
+}
+
+export async function getNotionDeletionQueue(): Promise<string[]> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get([STORAGE_KEYS.NOTION_DELETE_QUEUE], (result) => {
+      resolve((result[STORAGE_KEYS.NOTION_DELETE_QUEUE] as string[]) || [])
+    })
+  })
+}
+
+export async function addToNotionDeletionQueue(id: string): Promise<void> {
+  const normalizedId = normalizeNotionIdForQueue(id)
+
+  if (!NOTION_ID_REGEX.test(normalizedId)) {
+    return
+  }
+
+  const queue = await getNotionDeletionQueue()
+
+  if (queue.includes(normalizedId)) {
+    return
+  }
+
+  await setNotionDeletionQueue([...queue, normalizedId])
+}
+
+export async function removeFromNotionDeletionQueue(ids: string[]): Promise<void> {
+  if (ids.length === 0) {
+    return
+  }
+
+  const idsToRemove = new Set(ids.map(normalizeNotionIdForQueue))
+  const queue = await getNotionDeletionQueue()
+  const filteredQueue = queue.filter((queueId) => !idsToRemove.has(queueId))
+
+  if (filteredQueue.length !== queue.length) {
+    await setNotionDeletionQueue(filteredQueue)
+  }
+}
+
 // Save Notion configuration
 export async function saveNotionConfig(config: NotionConfig): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -315,6 +415,32 @@ export async function getSyncStatus(): Promise<SyncStatus> {
   })
 }
 
+export async function getAutoSyncSetting(): Promise<boolean> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get([STORAGE_KEYS.AUTO_SYNC], (result) => {
+      const value = result[STORAGE_KEYS.AUTO_SYNC]
+      resolve(Boolean(value))
+    })
+  })
+}
+
+export async function setAutoSyncSetting(enabled: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.sync.set(
+      {
+        [STORAGE_KEYS.AUTO_SYNC]: enabled,
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError)
+        } else {
+          resolve()
+        }
+      },
+    )
+  })
+}
+
 // Update sync status
 export async function updateSyncStatus(status: Partial<SyncStatus>): Promise<void> {
   const currentStatus = await getSyncStatus()
@@ -347,6 +473,23 @@ export async function syncWithNotion(): Promise<Prompt[]> {
 
   try {
     await updateSyncStatus({ inProgress: true, error: null })
+
+    const pendingDeletions = await getNotionDeletionQueue()
+
+    if (pendingDeletions.length > 0) {
+      const remainingDeletions: string[] = []
+
+      for (const deletionId of pendingDeletions) {
+        try {
+          await deletePromptFromNotion(deletionId)
+        } catch (error) {
+          console.error("Failed to delete Notion page:", error)
+          remainingDeletions.push(deletionId)
+        }
+      }
+
+      await setNotionDeletionQueue(remainingDeletions)
+    }
 
     // Sync with Notion
     const syncedPrompts = await notionSync(prompts)

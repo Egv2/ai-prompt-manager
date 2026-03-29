@@ -61,8 +61,8 @@ export default function AddPrompt({
   const [isTitleFocused, setIsTitleFocused] = useState(false);
   const [isContentFocused, setIsContentFocused] = useState(false);
 
-  // Character limit for content (increased from 5000 to 10000)
-  const MAX_CONTENT_LENGTH = 10000;
+  // Character limit for content
+  const MAX_CONTENT_LENGTH = 20000;
   const contentPercentage = Math.min(
     (content.length / MAX_CONTENT_LENGTH) * 100,
     100

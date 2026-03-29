@@ -109,6 +109,43 @@ export default function Settings({
     }
   }, [theme]);
 
+  useEffect(() => {
+    const storage = getChromeLocalStorage();
+    if (!storage) {
+      return;
+    }
+
+    storage.get([NOTION_DRAFT_STORAGE_KEY], (result: any) => {
+      const draft = result?.[NOTION_DRAFT_STORAGE_KEY];
+
+      if (!draft) {
+        return;
+      }
+
+      setNotionApiKey(draft.apiKey ?? "");
+      setNotionPageId(draft.pageId ?? "");
+    });
+  }, []);
+
+  useEffect(() => {
+    const storage = getChromeLocalStorage();
+    if (!storage) {
+      return;
+    }
+
+    if (!notionApiKey && !notionPageId) {
+      storage.remove(NOTION_DRAFT_STORAGE_KEY);
+      return;
+    }
+
+    storage.set({
+      [NOTION_DRAFT_STORAGE_KEY]: {
+        apiKey: notionApiKey,
+        pageId: notionPageId,
+      },
+    });
+  }, [notionApiKey, notionPageId]);
+
   // Reset connection status when inputs change
   useEffect(() => {
     if (connectionStatus !== "idle") {
@@ -209,6 +246,9 @@ export default function Settings({
         pageId: notionPageId,
       });
 
+      const storage = getChromeLocalStorage();
+      storage?.remove(NOTION_DRAFT_STORAGE_KEY);
+
       setNotionApiKey("");
       setNotionPageId("");
       setConnectionStatus("idle");
@@ -235,6 +275,8 @@ export default function Settings({
 
     try {
       await clearNotionConfig();
+      const storage = getChromeLocalStorage();
+      storage?.remove(NOTION_DRAFT_STORAGE_KEY);
       onStorageChange("local");
 
       toast({
@@ -639,10 +681,22 @@ export default function Settings({
                     <Button
                       variant="outline"
                       className="gap-2 transition-all hover:bg-accent/50"
-                      onClick={() => {}}
+                      onClick={() => {
+                        void onSyncNow();
+                      }}
+                      disabled={syncStatus.inProgress}
                     >
-                      <RefreshCw className="w-4 h-4" />
-                      Sync Now
+                      {syncStatus.inProgress ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Syncing...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4" />
+                          Sync Now
+                        </>
+                      )}
                     </Button>
                     <Button
                       variant="destructive"

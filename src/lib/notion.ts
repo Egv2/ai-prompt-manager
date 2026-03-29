@@ -7,6 +7,46 @@ declare const chrome: any
 // Notion API client
 const NOTION_API_BASE_URL = "https://api.notion.com/v1"
 
+function normalizeNotionId(id: string): string {
+  return id.replace(/-/g, "").trim()
+}
+
+function chunkRichTextContent(content: string, chunkSize = 1800): string[] {
+  if (!content) {
+    return [""]
+  }
+
+  const chunks: string[] = []
+
+  for (let index = 0; index < content.length; index += chunkSize) {
+    chunks.push(content.slice(index, index + chunkSize))
+  }
+
+  return chunks
+}
+
+function extractDatabaseProperties(database: any): {
+  title: string
+  content?: string
+  tags?: string
+} {
+  const entries = Object.entries(database.properties || {})
+  const titleEntry = entries.find(([, prop]: any) => prop.type === "title")
+
+  if (!titleEntry) {
+    throw new Error("Database is missing a title property")
+  }
+
+  const richTextEntry = entries.find(([, prop]: any) => prop.type === "rich_text")
+  const tagsEntry = entries.find(([, prop]: any) => prop.type === "multi_select")
+
+  return {
+    title: titleEntry[0],
+    content: richTextEntry?.[0],
+    tags: tagsEntry?.[0],
+  }
+}
+
 // Helper function to make authenticated requests to Notion API
 async function notionRequest(endpoint: string, method = "GET", body?: any, apiKey?: string): Promise<any> {
   const config = apiKey ? { apiKey } : await getNotionConfig()
@@ -42,14 +82,28 @@ async function notionRequest(endpoint: string, method = "GET", body?: any, apiKe
 
 // Test Notion connection
 export async function testNotionConnection(config: NotionConfig): Promise<boolean> {
-  try {
-    // Try to get the page to verify API key and page existence
-    await notionRequest(`/pages/${config.pageId}`, "GET", undefined, config.apiKey)
-    return true
-  } catch (error) {
-    console.error("Failed to connect to Notion:", error)
-    return false
+  const candidates = [
+    config.pageId.trim(),
+    normalizeNotionId(config.pageId),
+  ].filter((value, index, array) => value && array.indexOf(value) === index)
+
+  for (const candidate of candidates) {
+    try {
+      await notionRequest(`/databases/${candidate}`, "GET", undefined, config.apiKey)
+      return true
+    } catch (databaseError) {
+      console.warn("Notion database lookup failed for candidate:", candidate, databaseError)
+
+      try {
+        await notionRequest(`/pages/${candidate}`, "GET", undefined, config.apiKey)
+        return true
+      } catch (pageError) {
+        console.error("Notion page lookup failed for candidate:", candidate, pageError)
+      }
+    }
   }
+
+  return false
 }
 
 // Convert Notion page to Prompt
@@ -75,7 +129,7 @@ function notionPageToPrompt(page: any): Prompt | null {
     const lastEditedTime = new Date(page.last_edited_time).getTime()
 
     return {
-      id: page.id,
+      id: normalizeNotionId(page.id),
       title,
       content,
       tags,
@@ -131,19 +185,41 @@ export async function fetchPromptsFromNotion(): Promise<Prompt[]> {
   }
 
   try {
-    // Check if the page ID is a database
-    const pageResponse = await notionRequest(`/pages/${config.pageId}`)
+    const candidates = [
+      config.pageId.trim(),
+      normalizeNotionId(config.pageId),
+    ].filter((value, index, array) => value && array.indexOf(value) === index)
 
-    // If it's not a database, create one
-    let databaseId = config.pageId
-    if (!pageResponse.object === "database") {
-      databaseId = await createNotionDatabase(config.pageId)
+    let databaseId: string | null = null
 
-      // Update the config with the new database ID
-      await saveNotionConfig({
-        ...config,
-        pageId: databaseId,
-      })
+    for (const candidate of candidates) {
+      try {
+        await notionRequest(`/databases/${candidate}`, "GET")
+        databaseId = candidate
+        break
+      } catch (databaseError) {
+        console.warn("Unable to read Notion database for candidate:", candidate, databaseError)
+
+        try {
+          const pageResponse = await notionRequest(`/pages/${candidate}`)
+
+          if (pageResponse?.object === "page") {
+            const createdDatabaseId = await createNotionDatabase(candidate)
+            databaseId = createdDatabaseId.trim()
+            await saveNotionConfig({
+              ...config,
+              pageId: databaseId,
+            })
+            break
+          }
+        } catch (pageError) {
+          console.error("Unable to read Notion page for candidate:", candidate, pageError)
+        }
+      }
+    }
+
+    if (!databaseId) {
+      throw new Error("Unable to locate or create a Notion database with the provided ID")
     }
 
     // Query the database
@@ -160,15 +236,18 @@ export async function fetchPromptsFromNotion(): Promise<Prompt[]> {
 }
 
 // Save a prompt to Notion
-export async function savePromptToNotion(prompt: Prompt): Promise<void> {
+export async function savePromptToNotion(prompt: Prompt): Promise<Prompt> {
   const config = await getNotionConfig()
 
   if (!config) {
     throw new Error("Notion is not configured")
   }
 
-  const properties: any = {
-    Title: {
+  const database = await notionRequest(`/databases/${normalizeNotionId(config.pageId)}`, "GET")
+  const schema = extractDatabaseProperties(database)
+
+  const notionProperties: Record<string, any> = {
+    [schema.title]: {
       title: [
         {
           text: {
@@ -177,39 +256,67 @@ export async function savePromptToNotion(prompt: Prompt): Promise<void> {
         },
       ],
     },
-    Content: {
-      rich_text: [
-        {
-          text: {
-            content: prompt.content,
-          },
-        },
-      ],
-    },
   }
 
-  // Add tags if they exist
-  if (prompt.tags && prompt.tags.length > 0) {
-    properties.Tags = {
+  if (schema.content) {
+    const contentChunks = chunkRichTextContent(prompt.content)
+
+    notionProperties[schema.content] = {
+      rich_text: contentChunks.map((chunk) => ({
+        text: {
+          content: chunk,
+        },
+      })),
+    }
+  }
+
+  if (schema.tags && prompt.tags && prompt.tags.length > 0) {
+    notionProperties[schema.tags] = {
       multi_select: prompt.tags.map((tag) => ({ name: tag })),
     }
   }
 
-  const body = {
+  const requestBody = {
     parent: {
-      database_id: config.pageId,
+      database_id: normalizeNotionId(config.pageId),
     },
-    properties,
+    properties: notionProperties,
   }
 
-  // If the prompt already exists in Notion, update it
-  if (prompt.id && prompt.id.length > 30) {
-    await notionRequest(`/pages/${prompt.id}`, "PATCH", {
-      properties,
+  const normalizedId = prompt.id ? normalizeNotionId(prompt.id) : ""
+  const looksLikeNotionId =
+    !!prompt.id && prompt.id === normalizedId && /^[0-9a-f]{32}$/i.test(normalizedId)
+
+  if (looksLikeNotionId) {
+    const updatedPage = await notionRequest(`/pages/${normalizedId}`, "PATCH", {
+      properties: notionProperties,
+      archived: false,
     })
-  } else {
-    // Otherwise create a new page
-    await notionRequest("/pages", "POST", body)
+
+    return {
+      ...prompt,
+      id: normalizeNotionId(updatedPage.id ?? normalizedId),
+      updatedAt: updatedPage?.last_edited_time
+        ? new Date(updatedPage.last_edited_time).getTime()
+        : Date.now(),
+    }
+  }
+
+  const createdPage = await notionRequest("/pages", "POST", {
+    ...requestBody,
+    archived: false,
+  })
+  const newId = normalizeNotionId(createdPage.id)
+
+  return {
+    ...prompt,
+    id: newId,
+    createdAt: createdPage?.created_time
+      ? new Date(createdPage.created_time).getTime()
+      : prompt.createdAt,
+    updatedAt: createdPage?.last_edited_time
+      ? new Date(createdPage.last_edited_time).getTime()
+      : Date.now(),
   }
 }
 
@@ -222,11 +329,27 @@ export async function savePromptsToNotion(prompts: Prompt[]): Promise<void> {
 }
 
 // Delete a prompt from Notion
-export async function deletePromptFromNotion(promptId: string): Promise<void> {
-  // Notion doesn't allow true deletion via API, so we archive the page
-  await notionRequest(`/pages/${promptId}`, "PATCH", {
-    archived: true,
-  })
+export async function deletePromptFromNotion(promptId: string): Promise<boolean> {
+  const normalizedId = normalizeNotionId(promptId)
+
+  if (!/^[0-9a-f]{32}$/i.test(normalizedId)) {
+    return false
+  }
+
+  try {
+    await notionRequest(`/pages/${normalizedId}`, "PATCH", {
+      archived: true,
+    })
+    return true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+
+    if (message.toLowerCase().includes("could not find page")) {
+      return false
+    }
+
+    throw error
+  }
 }
 
 // Sync prompts with Notion (bidirectional)
@@ -248,13 +371,13 @@ export async function syncWithNotion(localPrompts: Prompt[]): Promise<Prompt[]> 
 
       if (!notionPrompt) {
         // Prompt exists only locally, add to Notion
-        await savePromptToNotion(localPrompt)
-        mergedPrompts.push(localPrompt)
+        const syncedPrompt = await savePromptToNotion(localPrompt)
+        mergedPrompts.push(syncedPrompt)
       } else {
         // Prompt exists in both places, use the most recent version
         if (localPrompt.updatedAt > notionPrompt.updatedAt) {
-          await savePromptToNotion(localPrompt)
-          mergedPrompts.push(localPrompt)
+          const syncedPrompt = await savePromptToNotion(localPrompt)
+          mergedPrompts.push(syncedPrompt)
         } else {
           mergedPrompts.push(notionPrompt)
         }
